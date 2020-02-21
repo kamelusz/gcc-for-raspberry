@@ -1,0 +1,99 @@
+name: Build on every push
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-18.04
+    
+    steps:
+    - uses: actions/checkout@v1
+    - name: Update Ubuntu repos
+      run: | 
+        sudo apt update 
+        sudo apt install -y build-essential gawk git texinfo bison file wget gettext
+    - name: Download Binutils
+      run: wget https://ftpmirror.gnu.org/binutils/binutils-2.31.tar.bz2
+    - name: Download Glibc
+      run: wget https://ftpmirror.gnu.org/glibc/glibc-2.28.tar.bz2
+    - name: Download GCC
+      run: wget https://ftpmirror.gnu.org/gcc/gcc-8.3.0/gcc-8.3.0.tar.gz
+    - name: Clone https://github.com/raspberrypi/linux
+      run: git clone --depth=1 https://github.com/raspberrypi/linux
+    - name: Extract the archives
+      run: |
+        tar xf binutils-2.31.tar.bz2
+        tar xf glibc-2.28.tar.bz2
+        tar xf gcc-8.3.0.tar.gz
+    - name: Remove the archives
+      run: rm *.tar.*
+    - name: Download GCC prerequisites
+      run: |
+        cd gcc-8.3.0 
+        contrib/download_prerequisites  
+        rm *.tar.*
+    - name: Create destination for cross compiler
+      run: |
+        sudo mkdir -p /opt/cross-pi-gcc 
+        sudo chown $USER /opt/cross-pi-gcc
+    - name: Copy kernel headers
+      run: |
+        cd linux 
+        KERNEL=kernel7 
+        make ARCH=arm INSTALL_HDR_PATH=/opt/cross-pi-gcc/arm-linux-gnueabihf headers_install
+    - name: Build Binutils
+      run: |
+        mkdir build-binutils
+        cd build-binutils
+        export PATH=/opt/cross-pi-gcc/bin:$PATH
+        ../binutils-2.31/configure --prefix=/opt/cross-pi-gcc --target=arm-linux-gnueabihf --with-arch=armv6 --with-fpu=vfp --with-float=hard --disable-multilib
+        make -j3
+        make install
+    - name: Partial build of GCC
+      run: |
+        mkdir build-gcc 
+        cd build-gcc 
+        export PATH=/opt/cross-pi-gcc/bin:$PATH
+        ../gcc-8.3.0/configure --prefix=/opt/cross-pi-gcc --target=arm-linux-gnueabihf --enable-languages=c,c++,fortran --with-arch=armv6 --with-fpu=vfp --with-float=hard --disable-multilib
+        make -j3 all-gcc
+        make install-gcc 
+    - name: Partially build Glibc
+      run: |
+        mkdir build-glibc 
+        cd build-glibc 
+        export PATH=/opt/cross-pi-gcc/bin:$PATH 
+        ../glibc-2.28/configure --prefix=/opt/cross-pi-gcc/arm-linux-gnueabihf --build=$MACHTYPE --host=arm-linux-gnueabihf --target=arm-linux-gnueabihf --with-arch=armv6 --with-fpu=vfp --with-float=hard --with-headers=/opt/cross-pi-gcc/arm-linux-gnueabihf/include --disable-multilib libc_cv_forced_unwind=yes 
+        make install-bootstrap-headers=yes install-headers 
+        make -j3 csu/subdir_lib 
+        install csu/crt1.o csu/crti.o csu/crtn.o /opt/cross-pi-gcc/arm-linux-gnueabihf/lib 
+        arm-linux-gnueabihf-gcc -nostdlib -nostartfiles -shared -x c /dev/null -o /opt/cross-pi-gcc/arm-linux-gnueabihf/lib/libc.so 
+        touch /opt/cross-pi-gcc/arm-linux-gnueabihf/include/gnu/stubs.h
+    - name: Make all-target-libgcc
+      run: |
+        cd build-gcc
+        export PATH=/opt/cross-pi-gcc/bin:$PATH
+        make -j3 all-target-libgcc
+        make install-target-libgcc
+    - name: Finish building Glibc
+      run: |
+        cd build-glibc
+        export PATH=/opt/cross-pi-gcc/bin:$PATH
+        make -j3
+        make install
+    - name: Finish building GCC
+      run: |
+        cd build-gcc
+        export PATH=/opt/cross-pi-gcc/bin:$PATH
+        make -j3
+        make install
+    - name: Prepare the archive for upload
+      run: |
+        cd /opt
+        tar -cjvf ~/cross-pi-gcc.tar.bz2 cross-pi-gcc
+    - name: Copy the archive
+      run: cp ~/cross-pi-gcc.tar.bz2 .
+    - name: Upload toolchain
+      uses: actions/upload-artifact@v1
+      with:
+        name: cross-pi-gcc.tar.bz2
+        path: cross-pi-gcc.tar.bz2
